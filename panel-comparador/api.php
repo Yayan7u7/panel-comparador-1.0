@@ -56,7 +56,7 @@ function callBrandmentionAPI($command, $params = []) {
  * @param int $per_page Cantidad de menciones por página.
  * @return array Datos de las menciones o un arreglo de error.
  */
-function getProjectMentions($project_id, $start_period = null, $end_period = null, $sources = ['twitter', 'instagram', 'facebook'], $page = 1, $per_page = 100) {
+function getProjectMentions($project_id, $start_period = null, $end_period = null, $sources = ['twitter', 'instagram', 'facebook'], $page = 1, $per_page = 5000) {
     $params = [
         'project_id' => $project_id,
         'page' => $page,
@@ -194,14 +194,11 @@ function getMentionsByAuthorAndKeyword($project_id, $author_input, $start_period
 function getWordCloudData($mentions, $limit = 50) {
     $word_counts = [];
     $stop_words = [
-        'de', 'la', 'el', 'en', 'y', 'a', 'con', 'que', 'por', 'para', 'un', 'una', 'los', 'las', 'del', 'al', 'se', 'es', 'su', 'sus', 'no', 'si', 'pero', 'como', 'cuando', 'este', 'esta', 'estos', 'estas', 'ser', 'hacer', 'tener', 'ir', 'mi', 'me', 'tu', 'te', 'lo', 'la', 'les', 'le', 'uno', 'unas',
-        'mil', '0', 'queretaro', 'qro', 'gobierno', 'estado', 'municipio', 'del', 'mas', 'sera', 'bien', 'solo', 'gran', 'este', 'estos', 'esta', 'estas', 'hoy', 'siempre', 'asi', 'hay', 'sin', 'poder', 'desde', 'muy', 'todo', 'todos', 'toda', 'todas', 'mucho', 'muchos', 'muchas', 'parte', 'donde', 'vamos', 'hacia', 'entre', 'ver', 'hacer', 'tener', 'ir', 'estar', 'dijo', 'dicen', 'hace', 'va', 'son', 'han', 'hay', 'fue', 'fueron', 'esta', 'estan', 'este', 'esta', 'estos', 'estas',
+        'de','nos', 'la', 'el', 'en', 'y', 'a', 'con', 'que', 'por', 'para', 'un', 'una', 'los', 'las', 'del', 'al', 'se', 'es', 'su', 'sus', 'no', 'si', 'pero', 'como', 'cuando', 'este', 'esta', 'estos', 'estas', 'ser', 'hacer', 'tener', 'ir', 'mi', 'me', 'tu', 'te', 'lo', 'la', 'les', 'le', 'uno', 'unas',
+        'mil', '0', 'qro', 'gobierno', 'estado', 'municipio', 'del', 'mas', 'sera', 'bien', 'solo', 'gran', 'este', 'estos', 'esta', 'estas', 'hoy', 'siempre', 'asi', 'hay', 'sin', 'poder', 'desde', 'muy', 'todo', 'todos', 'toda', 'todas', 'mucho', 'muchos', 'muchas', 'parte', 'donde', 'vamos', 'hacia', 'entre', 'ver', 'hacer', 'tener', 'ir', 'estar', 'dijo', 'dicen', 'hace', 'va', 'son', 'han', 'hay', 'fue', 'fueron', 'esta', 'estan', 'este', 'esta', 'estos', 'estas',
         // --- Palabras específicas de Felifer a excluir (NORMALIZADAS a sin acentos) ---
         'felifer', 'felifermacias', 'felifermaciaso', 'macias', 'maciaso', 'maciasfelipe', 'felipe', 'feli', 'fernando', 'fer', 'ferna', 'fel',
-        'diputado', 'diputada', 'diputados', 'diputadas', 'legislador', 'legisladora',
-        'extra', 'mes', 'aqui', 'jornada', 'contigo',
-        'llega', 'quienes', 'necesitan', 'encabeza', 'entrega', 'semillas', 'productores', 'santa', 'rosa', 'jauregui',
-        'presidente', 'municipal',
+
     ];
     $stop_words_map = array_flip($stop_words);
 
