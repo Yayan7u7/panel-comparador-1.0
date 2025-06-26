@@ -1,0 +1,135 @@
+/* Estilos generales para el cuerpo y fondo */
+body {
+    background-color: #f8f9fa; /* Un gris muy claro para el fondo */
+    font-family: 'Roboto', sans-serif; /* Puedes importar Roboto o usar la fuente por defecto de Bootstrap */
+}
+
+/* Sombras sutiles para las tarjetas (cards) */
+.card {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.05); /* Sombra suave */
+    border: none; /* Eliminar el borde predeterminado de Bootstrap */
+    border-radius: 0.5rem; /* Bordes ligeramente redondeados */
+}
+
+/* Estilos para badges de sentimiento */
+/* Aseguran que los colores se apliquen con prioridad */
+.badge.bg-positive { background-color: #28a745 !important; } /* Verde */
+.badge.bg-neutral { background-color: #ffc107 !important; color: #333 !important; } /* Amarillo con texto oscuro */
+.badge.bg-negative { background-color: #dc3545 !important; } /* Rojo */
+
+/* Colores para el texto de sentimiento en las listas */
+.sentiment-positive { color: #28a745; font-weight: bold; }
+.sentiment-neutral { color: #ffc107; font-weight: bold; }
+.sentiment-negative { color: #dc3545; font-weight: bold; }
+
+/* Estilo para el campo de entrada de usuario y botón de comparar */
+.form-control.search-input {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+.input-group .btn {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+
+/* Estilo para el título principal y subtítulo del dashboard/comparación */
+.dashboard-header {
+    padding: 2rem 0; /* Relleno superior e inferior */
+    margin-bottom: 2rem; /* Margen inferior */
+    border-bottom: 1px solid #e9ecef; /* Una línea divisoria sutil */
+}
+.dashboard-header h1 {
+    font-size: 2.5rem; /* Tamaño de fuente grande */
+    font-weight: 300; /* Grosor de fuente ligero */
+    color: #343a40; /* Color de texto oscuro */
+}
+.dashboard-header p {
+    color: #6c757d; /* Color de texto gris */
+}
+
+/* Estilo para el menú lateral (si tienes uno, como en la imagen del dashboard) */
+.sidebar {
+    background-color: #343a40; /* Gris oscuro para el sidebar */
+    color: #ffffff; /* Texto blanco */
+    min-height: 100vh; /* Asegura que ocupe toda la altura de la ventana */
+    padding-top: 20px;
+    position: sticky; /* Se mantiene fijo al hacer scroll */
+    top: 0; /* Arriba del todo */
+    left: 0;
+}
+.sidebar .logo {
+    font-size: 1.8rem;
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 30px;
+    color: #ffffff;
+}
+.sidebar .nav-link {
+    color: #adb5bd; /* Color de enlaces normal */
+    padding: 10px 15px;
+    margin-bottom: 5px;
+    border-radius: 0.25rem;
+}
+.sidebar .nav-link:hover, .sidebar .nav-link.active {
+    background-color: #495057; /* Fondo al pasar el ratón o activo */
+    color: #ffffff; /* Texto blanco al pasar el ratón o activo */
+}
+/* El contenedor principal del contenido para que tenga un margen al lado del sidebar */
+.content {
+    padding-left: 20px; /* Espacio para el sidebar */
+}
+
+
+/* Animación de entrada para los componentes */
+/* Estos son los estilos que ya tenías y que querías entender */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(15px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.fade-in {
+    animation: fadeIn 0.5s ease-out forwards;
+}
+
+.component-fade-in {
+    opacity: 0; /* Oculto por defecto para que la animación funcione */
+    /* La animación se aplicará con JavaScript después de un retraso */
+}
+
+/* Clase que JavaScript añadirá para activar la animación */
+.component-fade-in.is-visible {
+    animation: fadeIn 0.5s ease-out forwards;
+}
+/* Loader de carga para comparación */
+.loader {
+    border: 4px solid #f3f3f3; /* Light grey */
+    border-top: 4px solid #3498db; /* Blue */
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 2s linear infinite;
+    margin: 20px auto; /* Centrar y darle espacio */
+    display: none; /* Oculto por defecto */
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Optional: Styles for sentiment text in tables */
+.sentiment-positive { color: #28a745; font-weight: bold; } /* Bootstrap's success green */
+.sentiment-neutral { color: #6c757d; } /* Bootstrap's secondary grey */
+.sentiment-negative { color: #dc3545; font-weight: bold; } /* Bootstrap's danger red */
+
+/* For scrollable card bodies for influencer lists */
+.card-body.scrollable {
+    max-height: 500px; /* Adjust as needed */
+    overflow-y: auto;
+}

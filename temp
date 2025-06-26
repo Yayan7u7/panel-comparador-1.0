@@ -1,0 +1,1085 @@
+<?php
+// Habilitar la visualización de errores para depuración (desactivar en producción)
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
+// Incluir archivos necesarios
+require_once 'api.php';
+require_once 'config.php'; // Asume que este archivo define BRANDMENTION_API_KEY y BRANDMENTION_PROJECT_ID, BRANDMENTION_PROJECT_MAIN_KEYWORD
+
+// Establecer la cabecera para asegurar la correcta codificación de caracteres
+header('Content-Type: text/html; charset=utf-8');
+
+// --- Lógica de Manejo de Fechas y Plataformas ---
+$start_date = $_GET['start_date'] ?? '';
+$end_date = $_GET['end_date'] ?? '';
+$period = $_GET['period'] ?? '2weeks'; // Período predefinido por defecto
+
+$current_end_period = date('Y-m-d H:i:s'); // Por defecto, hasta ahora
+$current_start_period = date('Y-m-d H:i:s', strtotime('-2 weeks')); // Asigna un valor por defecto (2 semanas)
+
+// Determinar el rango de fechas para la API
+if (!empty($start_date) && !empty($end_date)) {
+    // Si se proporcionaron fechas específicas, úsalas
+    $current_start_period = date('Y-m-d 00:00:00', strtotime($start_date));
+    $current_end_period = date('Y-m-d 23:59:59', strtotime($end_date));
+} else {
+    // Si no, usa el período predefinido
+    $current_start_period = match ($period) {
+        '6months' => date('Y-m-d H:i:s', strtotime('-6 months')),
+        '3months' => date('Y-m-d H:i:s', strtotime('-3 months')),
+        '1month' => date('Y-m-d H:i:s', strtotime('-1 month')),
+        '2weeks' => date('Y-m-d H:i:s', strtotime('-2 weeks')),
+        '1week' => date('Y-m-d H:i:s', strtotime('-1 week')),
+        default => date('Y-m-d H:i:s', strtotime('-2 weeks')) // Fallback por defecto
+    };
+}
+
+$platform = $_GET['platform'] ?? 'all'; // Plataforma seleccionada, por defecto 'all'
+// Define todas las fuentes posibles de Brandmention
+$all_sources = ['twitter', 'instagram', 'facebook', 'web', 'youtube', 'linkedin', 'pinterest', 'reddit'];
+// Prepara el array de fuentes para la llamada a la API
+$sources_for_api = ($platform === 'all') ? $all_sources : [$platform];
+
+$mentions = []; // Almacenará todas las menciones para el panel general
+$mentions_volume_data = []; // Datos para la gráfica de volumen de menciones (formato para JS)
+$influencers_general_list = []; // Top Influencers generales
+$error_message = ''; // Para almacenar mensajes de error
+
+try {
+    // --- Obtener todas las menciones paginadas y los datos de volumen ---
+    // Usamos getAllProjectMentionsPaginated que ya maneja la paginación y pre-procesa el volumen
+    // Se establece un límite de 5000 menciones para evitar sobrecargar (ajustar si es necesario)
+    $all_project_data = getAllProjectMentionsPaginated(BRANDMENTION_PROJECT_ID, 5000, $current_start_period, $current_end_period, $sources_for_api);
+
+    if ($all_project_data['status'] === 'success') {
+        $mentions = $all_project_data['mentions'] ?? []; // Todas las menciones recolectadas
+        // Reformatear los datos de volumen para el Chart.js frontend ({date: 'YYYY-MM-DD', count: N})
+        $mentions_volume_data_raw = $all_project_data['volume_data']['data'] ?? [];
+        $mentions_volume_labels_raw = $all_project_data['volume_data']['labels'] ?? [];
+
+        if (!empty($mentions_volume_labels_raw) && !empty($mentions_volume_data_raw)) {
+            foreach ($mentions_volume_labels_raw as $index => $label) {
+                // Asegúrate de que $mentions_volume_data_raw[$index] existe antes de acceder
+                if (isset($mentions_volume_data_raw[$index])) {
+                    $mentions_volume_data[] = [
+                        'date' => $label,
+                        'count' => $mentions_volume_data_raw[$index]
+                    ];
+                }
+            }
+        }
+
+    } else {
+        $error_message = 'Error al obtener menciones del proyecto (paginadas): ' . htmlspecialchars($all_project_data['message']);
+    }
+
+    // --- Obtener Top Influencers del proyecto (llamada separada si Brandmention API lo requiere así) ---
+    // Asumimos que getProjectInfluencers obtiene los influencers directamente de la API, no de las menciones ya obtenidas
+    $influencers_data = getProjectInfluencers(BRANDMENTION_PROJECT_ID, $current_start_period, $current_end_period, $sources_for_api);
+    if ($influencers_data['status'] === 'success') {
+        $influencers_general_list = $influencers_data['influencers'] ?? [];
+    } else {
+        $error_message .= (empty($error_message) ? '' : ' | ') . 'Error al obtener influencers del proyecto: ' . htmlspecialchars($influencers_data['message']);
+    }
+
+} catch (Exception $e) {
+    $error_message .= (empty($error_message) ? '' : ' | ') . 'Excepción al obtener datos: ' . htmlspecialchars($e->getMessage());
+}
+
+// --- Calcular Sentimiento General (Basado en $mentions recolectadas) ---
+$sentiments = ['positive' => 0, 'neutral' => 0, 'negative' => 0];
+foreach ($mentions as $mention) {
+    $sentiment = trim($mention['sentiment'] ?? 'neutral');
+    if (in_array($sentiment, ['positive', 'neutral', 'negative'])) {
+        $sentiments[$sentiment]++;
+    }
+}
+$total_mentions_general = array_sum($sentiments);
+$sentiments_percentage = [
+    'positive' => $total_mentions_general ? ($sentiments['positive'] / $total_mentions_general) * 100 : 0,
+    'neutral' => $total_mentions_general ? ($sentiments['neutral'] / $total_mentions_general) * 100 : 0,
+    'negative' => $total_mentions_general ? ($sentiments['negative'] / $total_mentions_general) * 100 : 0
+];
+
+// --- Generar Datos para la Nube de Palabras General ---
+$word_cloud_data = getWordCloudData($mentions); // Asume que getWordCloudData está en api.php o helpers.php
+
+// --- Procesar Menciones para Top Influencers por Sentimiento (Positivo/Negativo) ---
+// Define variaciones del nombre principal de Felifer para excluirlo de listas de "influencers"
+$felifer_usernames_and_names_lower = [
+    strtolower(BRANDMENTION_PROJECT_MAIN_KEYWORD), // Ej: "felifermacias"
+    strtolower(ltrim(BRANDMENTION_PROJECT_MAIN_KEYWORD, '@ ')), // Elimina @ si lo tiene
+    'felifermacias', 'felifermaciaso', 'macias', 'maciaso', 'maciasfelipe', 'felipe', 'feli', 'fernando', 'fer', 'ferna', 'fel',
+    // ¡Añade cualquier otra variación de nombre/username aquí que Brandmention pueda reportar!
+];
+
+$influencers_by_sentiment = [];
+foreach ($mentions as $mention) {
+    $author_username = $mention['author']['username'] ?? ($mention['author']['name'] ?? '');
+    $author_name = $mention['author']['name'] ?? $author_username;
+    $author_profile_pic = $mention['author']['profile_pic'] ?? 'https://via.placeholder.com/20';
+    // Generar un ID único para el autor para evitar duplicados si aparecen en diferentes redes
+    $author_unique_id = ($mention['author']['id'] ?? $author_username) . '-' . ($mention['social_network'] ?? 'unknown');
+    $sentiment = trim($mention['sentiment'] ?? 'neutral');
+    $social_network = strtolower($mention['social_network'] ?? 'web');
+    $profile_url = $mention['author']['profile_url'] ?? '#'; // URL del perfil del autor
+
+    // Excluir al propio Felifer de las listas de "influencers"
+    $is_felifer = in_array(strtolower($author_username ?? ''), $felifer_usernames_and_names_lower) || in_array(strtolower($author_name ?? ''), $felifer_usernames_and_names_lower);
+
+    if (!empty($author_username) && !$is_felifer) {
+        if (!isset($influencers_by_sentiment[$author_unique_id])) {
+            $influencers_by_sentiment[$author_unique_id] = [
+                'username' => $author_username,
+                'name' => $author_name,
+                'profile_pic' => $author_profile_pic,
+                'social_network' => $social_network,
+                'positive_mentions' => 0,
+                'negative_mentions' => 0,
+                'neutral_mentions' => 0,
+                'total_mentions' => 0,
+                'profile_url' => $profile_url // Conservar la URL del perfil
+            ];
+        }
+        $influencers_by_sentiment[$author_unique_id]['total_mentions']++;
+        if (isset($influencers_by_sentiment[$author_unique_id][$sentiment . '_mentions'])) {
+            $influencers_by_sentiment[$author_unique_id][$sentiment . '_mentions']++;
+        }
+    }
+}
+
+// Filtrar y ordenar Top 10 Influencers Positivos
+$top_positive_influencers = [];
+foreach ($influencers_by_sentiment as $influencer) {
+    if ($influencer['positive_mentions'] > 0) {
+        $top_positive_influencers[] = $influencer;
+    }
+}
+usort($top_positive_influencers, function($a, $b) {
+    return $b['positive_mentions'] <=> $a['positive_mentions'];
+});
+$top_positive_influencers = array_slice($top_positive_influencers, 0, 10);
+
+// Filtrar y ordenar Top 10 Influencers Negativos
+$top_negative_influencers = [];
+foreach ($influencers_by_sentiment as $influencer) {
+    if ($influencer['negative_mentions'] > 0) {
+        $top_negative_influencers[] = $influencer;
+    }
+}
+usort($top_negative_influencers, function($a, $b) {
+    return $b['negative_mentions'] <=> $a['negative_mentions'];
+});
+$top_negative_influencers = array_slice($top_negative_influencers, 0, 10);
+
+
+// --- MODIFICACIÓN: Filtrar y ordenar para Top 10 Influencers General (excluir a Felifer) ---
+// Se usa la lista de influencers directamente de la API ($influencers_general_list)
+usort($influencers_general_list, function($a, $b) {
+    return ($b['mentions_count'] ?? 0) <=> ($a['mentions_count'] ?? 0);
+});
+
+$filtered_influencers_general = [];
+$count_filtered_general = 0;
+foreach ($influencers_general_list as $influencer) {
+    $username_lower = strtolower($influencer['username'] ?? '');
+    $name_lower = strtolower($influencer['name'] ?? '');
+
+    $is_felifer = in_array($username_lower, $felifer_usernames_and_names_lower) || in_array($name_lower, $felifer_usernames_and_names_lower);
+
+    if (!$is_felifer) {
+        $filtered_influencers_general[] = $influencer;
+        $count_filtered_general++;
+        if ($count_filtered_general >= 10) { // Limitar a 10
+            break;
+        }
+    }
+}
+
+
+// --- Datos para la gráfica de pastel del panel general (distribución por Red Social) ---
+$mentions_by_source_general = [
+    'twitter' => 0,
+    'instagram' => 0,
+    'facebook' => 0,
+    // Puedes añadir más si quieres que aparezcan en el pastel, e.g., 'web' => 0, 'youtube' => 0
+];
+
+foreach ($mentions as $mention) {
+    $source_lower = strtolower($mention['social_network'] ?? '');
+    if (isset($mentions_by_source_general[$source_lower])) {
+        $mentions_by_source_general[$source_lower]++;
+    }
+}
+
+$chart_labels_general = [];
+$chart_data_general = [];
+$chart_background_colors_general = [];
+$source_colors_general = [
+    'facebook' => '#1877F2',
+    'twitter' => '#1DA1F2',
+    'instagram' => '#C13584',
+    // Define colores para otras fuentes si las añades arriba
+    'web' => '#009688', // Teal
+    'youtube' => '#FF0000', // Red
+    'linkedin' => '#0A66C2', // Blue
+    'pinterest' => '#E60023', // Red
+    'reddit' => '#FF4500', // Orange
+];
+
+$total_mentions_for_pie_chart_general = array_sum($mentions_by_source_general);
+
+if ($total_mentions_for_pie_chart_general > 0) {
+    foreach ($mentions_by_source_general as $source => $count) {
+        if ($count > 0) { // Solo añadir si hay menciones para esa fuente
+            $label = ucfirst($source);
+            if ($source == 'twitter') $label = 'X (Twitter)'; // Personalizar etiqueta para Twitter
+            $chart_labels_general[] = $label;
+            $chart_data_general[] = ($count / $total_mentions_for_pie_chart_general) * 100; // Porcentaje
+            $chart_background_colors_general[] = $source_colors_general[$source] ?? '#6c757d'; // Color por defecto si no se encuentra
+        }
+    }
+}
+?>
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Análisis de Menciones de Felifermacias</title>
+    <link rel="stylesheet" href="assets/lib/bootstrap.min.css">
+    <style>
+        /* Estilos básicos para las cards y diseño general, copiados de tu ejemplo anterior */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+        }
+        .container-fluid {
+            padding-top: 20px;
+            padding-bottom: 20px;
+        }
+        .card {
+            border-radius: 12px;
+            overflow: hidden;
+            border: none;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+            transition: transform 0.2s ease-in-out;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+        }
+        .card-header {
+            background: linear-gradient(135deg, #007bff, #0056b3);
+            color: white;
+            padding: 15px 20px;
+            border-bottom: none;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        /* Colores específicos para headers de cards */
+        .card-header.bg-primary { background: linear-gradient(135deg, #007bff, #0056b3); }
+        .card-header.bg-info { background: linear-gradient(135deg, #17a2b8, #117a8b); }
+        .card-header.bg-success { background: linear-gradient(135deg, #28a745, #1e7e34); }
+        .card-header.bg-danger { background: linear-gradient(135deg, #dc3545, #bd2130); }
+        .card-header.bg-warning { background: linear-gradient(135deg, #ffc107, #d39e00); color: #333;}
+
+        .navbar {
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+            margin-bottom: 25px !important;
+        }
+        .navbar-brand {
+            font-weight: bold;
+            color: #007bff !important;
+        }
+        .navbar-nav .nav-link {
+            color: #555 !important;
+            transition: color 0.2s;
+        }
+        .navbar-nav .nav-link:hover {
+            color: #007bff !important;
+        }
+        .navbar-nav .nav-link.active {
+            font-weight: bold;
+            color: #007bff !important;
+        }
+
+        .form-select, .form-control {
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+        }
+        .btn {
+            border-radius: 8px;
+            font-weight: bold;
+            transition: all 0.2s ease-in-out;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            border-color: #007bff;
+        }
+        .btn-primary:hover {
+            background-color: #0056b3;
+            border-color: #0056b3;
+        }
+        .btn-warning {
+            background-color: #ffc107;
+            border-color: #ffc107;
+            color: #333;
+        }
+        .btn-warning:hover {
+            background-color: #e0a800;
+            border-color: #e0a800;
+        }
+
+        .sentiment-positive { color: #28a745; font-weight: bold; }
+        .sentiment-neutral { color: #6c757d; font-weight: bold; }
+        .sentiment-negative { color: #dc3545; font-weight: bold; }
+
+        .list-group-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 15px;
+            border-color: #eee;
+        }
+        .list-group-item:first-child { border-top-left-radius: 0; border-top-right-radius: 0; }
+        .list-group-item:last-child { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+
+        .list-group-item img {
+            border-radius: 50%; /* Asegura que las imágenes de perfil sean circulares */
+            border: 1px solid #eee;
+            object-fit: cover;
+        }
+
+        .badge {
+            padding: 6px 10px;
+            font-size: 0.8em;
+            font-weight: 600;
+            border-radius: 10px;
+        }
+        .badge.bg-primary { background-color: #007bff !important; }
+        .badge.bg-success { background-color: #28a745 !important; }
+        .badge.bg-danger { background-color: #dc3545 !important; }
+        .badge.bg-secondary { background-color: #6c757d !important; }
+
+        .scrollable {
+            max-height: 400px; /* Ajusta según sea necesario para las tablas de influencers */
+            overflow-y: auto;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 250px; /* Altura fija para los gráficos */
+            width: 100%;
+        }
+
+        /* Estilos para el loader */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+            display: none; /* Oculto por defecto */
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+    <script src="assets/lib/chart.min.js"></script>
+    <script src="assets/lib/wordcloud2.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+<div class="container-fluid mt-4">
+    <header class="mb-4 text-center">
+        <h1>Análisis de Menciones de Felifermacias</h1>
+        <p class="lead">Monitoreo y Comparación de Presencia Digital</p>
+    </header>
+
+    <nav class="navbar navbar-expand-lg navbar-light bg-light mb-4 shadow-sm rounded">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">Dashboard</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link active" aria-current="page" href="index.php">General</a>
+                    </li>
+                </ul>
+
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav me-auto">
+                        <li class="nav-item">
+                            <a class="nav-link active" aria-current="page" href="index.php">General</a>
+                        </li>
+                    </ul>
+                    <div class="dropdown me-3 mb-2 mb-lg-0">
+                        <button class="btn btn-secondary dropdown-toggle" type="button" id="exportDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                            Exportar
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="exportDropdown">
+                            <li><a class="dropdown-item" href="#" id="exportCsvBtn">Exportar a CSV</a></li>
+                            <li><a class="dropdown-item" href="#" id="exportPdfBtn">Exportar a PDF</a></li>
+                        </ul>
+                    </div>
+                    <form class="d-flex flex-wrap align-items-center" method="GET" action="index.php" id="filterForm">
+                    </form>
+                </div>
+
+                <form class="d-flex flex-wrap align-items-center" method="GET" action="index.php" id="filterForm">
+                    <select name="period" id="periodSelect" class="form-select me-2 mb-2 mb-lg-0" onchange="document.getElementById('start_date').value=''; document.getElementById('end_date').value=''; this.form.submit();">
+                        <option value="">Seleccionar Período</option>
+                        <option value="1week" <?= $period == '1week' && empty($start_date) ? 'selected' : '' ?>>Última Semana</option>
+                        <option value="2weeks" <?= $period == '2weeks' && empty($start_date) ? 'selected' : '' ?>>Últimas 2 Semanas</option>
+                        <option value="1month" <?= $period == '1month' && empty($start_date) ? 'selected' : '' ?>>Último Mes</option>
+                        <option value="3months" <?= $period == '3months' && empty($start_date) ? 'selected' : '' ?>>Últimos 3 Meses</option>
+                        <option value="6months" <?= $period == '6months' && empty($start_date) ? 'selected' : '' ?>>Últimos 6 Meses</option>
+                    </select>
+                    <select name="platform" id="platformSelect" class="form-select me-2 mb-2 mb-lg-0" onchange="this.form.submit()">
+                        <option value="all" <?= $platform == 'all' ? 'selected' : '' ?>>Todas las plataformas</option>
+                        <option value="twitter" <?= $platform == 'twitter' ? 'selected' : '' ?>>X (Twitter)</option>
+                        <option value="facebook" <?= $platform == 'facebook' ? 'selected' : '' ?>>Facebook</option>
+                        <option value="instagram" <?= $platform == 'instagram' ? 'selected' : '' ?>>Instagram</option>
+                        <option value="web" <?= $platform == 'web' ? 'selected' : '' ?>>Web</option>
+                        <option value="youtube" <?= $platform == 'youtube' ? 'selected' : '' ?>>YouTube</option>
+                        <option value="linkedin" <?= $platform == 'linkedin' ? 'selected' : '' ?>>LinkedIn</option>
+                        <option value="pinterest" <?= $platform == 'pinterest' ? 'selected' : '' ?>>Pinterest</option>
+                        <option value="reddit" <?= $platform == 'reddit' ? 'selected' : '' ?>>Reddit</option>
+                    </select>
+                </form>
+            </div>
+        </div>
+    </nav>
+
+    <?php if (!empty($error_message)): ?>
+        <div class="alert alert-danger" role="alert">
+            <?= $error_message ?>
+        </div>
+    <?php endif; ?>
+
+    <div class="row">
+        <div class="col-lg-6 mb-4">
+            <div class="card shadow">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">Sentimiento General del Proyecto (<?= BRANDMENTION_PROJECT_MAIN_KEYWORD ?>)</h5>
+                </div>
+                <div class="card-body">
+                    <p class="card-text">Total de menciones analizadas: <strong><?= $total_mentions_general ?></strong></p>
+                    <table class="table table-bordered table-sm">
+                        <thead>
+                        <tr>
+                            <th>Sentimiento</th>
+                            <th>Porcentaje</th>
+                            <th>Conteo</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <tr>
+                            <td class="sentiment-positive">Positivo</td>
+                            <td><?= round($sentiments_percentage['positive'], 1) ?>%</td>
+                            <td><?= $sentiments['positive'] ?></td>
+                        </tr>
+                        <tr>
+                            <td class="sentiment-neutral">Neutral</td>
+                            <td><?= round($sentiments_percentage['neutral'], 1) ?>%</td>
+                            <td><?= $sentiments['neutral'] ?></td>
+                        </tr>
+                        <tr>
+                            <td class="sentiment-negative">Negativo</td>
+                            <td><?= round($sentiments_percentage['negative'], 1) ?>%</td>
+                            <td><?= $sentiments['negative'] ?></td>
+                        </tr>
+                        </tbody>
+                    </table>
+                    <h6 class="mt-4">Distribución por Red Social</h6>
+                    <div class="chart-container">
+                        <canvas id="generalMentionsPieChart"></canvas>
+                    </div>
+                    <?php if (empty($chart_data_general)): ?>
+                        <p class="text-center mt-2 no-data-message-pie-chart-general">No hay datos de menciones por red social disponibles para el panel general.</p>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6 mb-4">
+            <div class="card shadow">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0">Nube de Palabras General</h5>
+                </div>
+                <div class="card-body text-center">
+                    <?php if (!empty($word_cloud_data)): ?>
+                        <div id="wordcloud" style="width: 100%; height: 300px; position: relative;"></div>
+                    <?php else: ?>
+                        <div class="alert alert-info">No hay datos suficientes para generar la nube de palabras.</div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 mb-4">
+            <div class="card shadow">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">Volumen de Menciones por Fecha</h5>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="mentionsVolumeChart"></canvas>
+                    </div>
+                    <?php if (empty($mentions_volume_data)): ?>
+                        <p class="text-center mt-2">No hay datos de volumen de menciones disponibles para el período seleccionado.</p>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6 mb-4">
+            <div class="card shadow">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0">Top 10 Influencers Generales (por Menciones)</h5>
+                </div>
+                <div class="card-body scrollable">
+                    <?php if (!empty($filtered_influencers_general)): ?>
+                        <ul class="list-group list-group-flush">
+                            <?php foreach ($filtered_influencers_general as $influencer):
+                                $username_display = htmlspecialchars($influencer['username'] ?? 'N/A');
+                                $name_display = htmlspecialchars($influencer['name'] ?? $username_display);
+                                $total_mentions = htmlspecialchars($influencer['mentions_count'] ?? 0);
+                                $network = strtolower($influencer['social_network'] ?? '');
+                                $profile_pic = htmlspecialchars($influencer['profile_pic'] ?? 'https://via.placeholder.com/20');
+
+                                // Construir URL de perfil basado en la red social
+                                $profile_url = '#';
+                                if (!empty($username_display) && $username_display !== 'N/A') {
+                                    switch ($network) {
+                                        case 'twitter':
+                                            $profile_url = 'https://twitter.com/' . ltrim($username_display, '@');
+                                            break;
+                                        case 'instagram':
+                                            $profile_url = 'https://instagram.com/' . ltrim($username_display, '@');
+                                            break;
+                                        case 'facebook':
+                                            // Facebook puede tener usernames o IDs numéricos
+                                            if (is_numeric($username_display)) {
+                                                $profile_url = 'https://www.facebook.com/profile.php?id=' . $username_display;
+                                            } else {
+                                                $profile_url = 'https://www.facebook.com/' . $username_display;
+                                            }
+                                            break;
+                                        // Añade más casos para otras redes si es necesario
+                                        default:
+                                            $profile_url = $influencer['profile_url'] ?? '#'; // Usar URL de la API si existe
+                                            break;
+                                    }
+                                }
+                                ?>
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <img src="<?= $profile_pic ?>" alt="Profile Pic" class="rounded-circle me-2" style="width: 25px; height: 25px;">
+                                        <?php if ($profile_url !== '#'): ?>
+                                            <a href="<?= $profile_url ?>" target="_blank" rel="noopener noreferrer">
+                                                <strong><?= $name_display ?></strong>
+                                            </a>
+                                        <?php else: ?>
+                                            <strong><?= $name_display ?></strong>
+                                        <?php endif; ?>
+                                        <small class="text-muted">(@<?= $username_display ?>)</small>
+                                        <span class="badge bg-secondary ms-2"><?= htmlspecialchars(ucfirst($network)) ?></span>
+                                    </div>
+                                    <span class="badge bg-primary rounded-pill">Menciones: <?= $total_mentions ?></span>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <div class="alert alert-info text-center">
+                            No se encontraron influencers para el período y plataformas seleccionados.
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6 mb-4">
+            <div class="card shadow">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0">Top 10 Influencers Positivos</h5>
+                </div>
+                <div class="card-body scrollable">
+                    <?php if (!empty($top_positive_influencers) && $top_positive_influencers[0]['positive_mentions'] > 0): ?>
+                        <ul class="list-group list-group-flush">
+                            <?php foreach ($top_positive_influencers as $influencer):
+                                if ($influencer['positive_mentions'] == 0) continue; // Asegurarse de que realmente haya menciones positivas
+
+                                $username_display = htmlspecialchars($influencer['username'] ?? 'N/A');
+                                $name_display = htmlspecialchars($influencer['name'] ?? $username_display);
+                                $total_positive_mentions = htmlspecialchars($influencer['positive_mentions'] ?? 0);
+                                $network = strtolower($influencer['social_network'] ?? '');
+                                $profile_pic = htmlspecialchars($influencer['profile_pic'] ?? 'https://via.placeholder.com/20');
+
+                                // Construir URL de perfil basado en la red social
+                                $profile_url = '#';
+                                if (!empty($username_display) && $username_display !== 'N/A') {
+                                    switch ($network) {
+                                        case 'twitter':
+                                            $profile_url = 'https://twitter.com/' . ltrim($username_display, '@');
+                                            break;
+                                        case 'instagram':
+                                            $profile_url = 'https://instagram.com/' . ltrim($username_display, '@');
+                                            break;
+                                        case 'facebook':
+                                            if (is_numeric($username_display)) {
+                                                $profile_url = 'https://www.facebook.com/profile.php?id=' . $username_display;
+                                            } else {
+                                                $profile_url = 'https://www.facebook.com/' . $username_display;
+                                            }
+                                            break;
+                                        default:
+                                            $profile_url = $influencer['profile_url'] ?? '#';
+                                            break;
+                                    }
+                                }
+                                ?>
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <img src="<?= $profile_pic ?>" alt="Profile Pic" class="rounded-circle me-2" style="width: 25px; height: 25px;">
+                                        <?php if ($profile_url !== '#'): ?>
+                                            <a href="<?= $profile_url ?>" target="_blank" rel="noopener noreferrer">
+                                                <strong><?= $name_display ?></strong>
+                                            </a>
+                                        <?php else: ?>
+                                            <strong><?= $name_display ?></strong>
+                                        <?php endif; ?>
+                                        <small class="text-muted">(@<?= $username_display ?>)</small>
+                                        <span class="badge bg-secondary ms-2"><?= htmlspecialchars(ucfirst($network)) ?></span>
+                                    </div>
+                                    <span class="badge bg-success rounded-pill">Menciones Positivas: <?= $total_positive_mentions ?></span>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <div class="alert alert-info text-center">
+                            No se encontraron influencers con menciones positivas en el período y plataformas seleccionados.
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6 mb-4">
+            <div class="card shadow">
+                <div class="card-header bg-danger text-white">
+                    <h5 class="mb-0">Top 10 Influencers Negativos</h5>
+                </div>
+                <div class="card-body scrollable">
+                    <?php if (!empty($top_negative_influencers) && $top_negative_influencers[0]['negative_mentions'] > 0): ?>
+                        <ul class="list-group list-group-flush">
+                            <?php foreach ($top_negative_influencers as $influencer):
+                                if ($influencer['negative_mentions'] == 0) continue; // Asegurarse de que realmente haya menciones negativas
+
+                                $username_display = htmlspecialchars($influencer['username'] ?? 'N/A');
+                                $name_display = htmlspecialchars($influencer['name'] ?? $username_display);
+                                $total_negative_mentions = htmlspecialchars($influencer['negative_mentions'] ?? 0);
+                                $network = strtolower($influencer['social_network'] ?? '');
+                                $profile_pic = htmlspecialchars($influencer['profile_pic'] ?? 'https://via.placeholder.com/20');
+
+                                // Construir URL de perfil basado en la red social
+                                $profile_url = '#';
+                                if (!empty($username_display) && $username_display !== 'N/A') {
+                                    switch ($network) {
+                                        case 'twitter':
+                                            $profile_url = 'https://twitter.com/' . ltrim($username_display, '@');
+                                            break;
+                                        case 'instagram':
+                                            $profile_url = 'https://instagram.com/' . ltrim($username_display, '@');
+                                            break;
+                                        case 'facebook':
+                                            if (is_numeric($username_display)) {
+                                                $profile_url = 'https://www.facebook.com/profile.php?id=' . $username_display;
+                                            } else {
+                                                $profile_url = 'https://www.facebook.com/' . $username_display;
+                                            }
+                                            break;
+                                        default:
+                                            $profile_url = $influencer['profile_url'] ?? '#';
+                                            break;
+                                    }
+                                }
+                                ?>
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <img src="<?= $profile_pic ?>" alt="Profile Pic" class="rounded-circle me-2" style="width: 25px; height: 25px;">
+                                        <?php if ($profile_url !== '#'): ?>
+                                            <a href="<?= $profile_url ?>" target="_blank" rel="noopener noreferrer">
+                                                <strong><?= $name_display ?></strong>
+                                            </a>
+                                        <?php else: ?>
+                                            <strong><?= $name_display ?></strong>
+                                        <?php endif; ?>
+                                        <small class="text-muted">(@<?= $username_display ?>)</small>
+                                        <span class="badge bg-secondary ms-2"><?= htmlspecialchars(ucfirst($network)) ?></span>
+                                    </div>
+                                    <span class="badge bg-danger rounded-pill">Menciones Negativas: <?= $total_negative_mentions ?></span>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <div class="alert alert-info text-center">
+                            No se encontraron influencers con menciones negativas en el período y plataformas seleccionados.
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-12 mb-4">
+            <div class="card shadow">
+                <div class="card-header bg-warning text-dark">
+                    <h5 class="mb-0">Comparar Interacción con Otro Usuario</h5>
+                </div>
+                <div class="card-body">
+                    <form id="compareForm" class="row g-3" onsubmit="loadComparison(event)">
+                        <div class="col-md-6">
+                            <label for="compareUserInput" class="form-label">Nombre de usuario o perfil a comparar (ej. @voz_imparcial):</label>
+                            <input type="text" class="form-control" id="compareUserInput" name="compare_user" placeholder="Ej: @nombredeusuario" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="comparePeriod" class="form-label">Período:</label>
+                            <select name="period" class="form-select" id="comparePeriod">
+                                <option value="1week" <?= $period == '1week' ? 'selected' : '' ?>>Última Semana</option>
+                                <option value="2weeks" <?= $period == '2weeks' ? 'selected' : '' ?>>Últimas 2 Semanas</option>
+                                <option value="1month" <?= $period == '1month' ? 'selected' : '' ?>>Último Mes</option>
+                                <option value="3months" <?= $period == '3months' ? 'selected' : '' ?>>Últimos 3 Meses</option>
+                                <option value="6months" <?= $period == '6months' ? 'selected' : '' ?>>Últimos 6 Meses</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button type="submit" class="btn btn-warning w-100">Comparar</button>
+                        </div>
+                    </form>
+                    <div class="loader" id="compareLoader"></div> <div id="comparisonResultContainer" class="mt-4" style="display: none;">
+                        <div class="alert alert-info text-center" role="alert">
+                            Ingresa un nombre de usuario y haz clic en "Comparar" para ver las menciones que ha hecho hacia Felifer.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="assets/lib/bootstrap.bundle.min.js"></script>
+<script>
+    // Configuración global para Chart.js
+    Chart.defaults.font.family = 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif';
+    Chart.defaults.color = '#555';
+
+    // --- Nube de Palabras (tu script adaptado) ---
+    var wordCloudDataGeneral = <?php echo json_encode($word_cloud_data); ?>;
+
+    if (wordCloudDataGeneral && wordCloudDataGeneral.length > 0) {
+        setTimeout(function() {
+            const wordcloudDiv = document.getElementById('wordcloud');
+            if (wordcloudDiv) {
+                // Eliminar canvas existente para evitar duplicados si se recarga dinámicamente
+                let existingCanvas = wordcloudDiv.querySelector('canvas');
+                if (existingCanvas) {
+                    existingCanvas.remove();
+                }
+
+                WordCloud(wordcloudDiv, {
+                    list: wordCloudDataGeneral,
+                    weightFactor: 0.1,
+                    fontFamily: 'Arial, sans-serif',
+                    color: function(word) {
+                        // Cambiar el color basado en si la palabra clave principal está presente
+                        return word && (word.toLowerCase().includes('felifer') || word.toLowerCase().includes('macías'))
+                            ? '#28A745' // Color verde para palabras clave
+                            : '#000000'; // Color negro para otras palabras
+                    },
+                    backgroundColor: '#ffffff',
+                    minSize: 10,
+                    rotateRatio: 0,
+                    gridSize: 8,
+                    drawOutOfBound: false,
+                });
+                console.log('WordCloud general inicializado.');
+            } else {
+                console.error('El div #wordcloud NO existe.');
+            }
+        }, 100);
+    } else {
+        const wordcloudDiv = document.getElementById('wordcloud');
+        if (wordcloudDiv) {
+            wordcloudDiv.innerHTML = '<div class="alert alert-info">No hay datos suficientes para generar la nube de palabras.</div>';
+            // También puedes ocultar un canvas si ya existía y estaba vacío
+            const canvas = wordcloudDiv.querySelector('canvas');
+            if (canvas) canvas.style.display = 'none';
+        }
+        console.log('No hay datos para la nube de palabras.');
+    }
+
+    // --- Gráfica de Pastel del Panel General (tu script) ---
+    var chartLabelsGeneral = <?php echo json_encode($chart_labels_general); ?>;
+    var chartDataGeneral = <?php echo json_encode($chart_data_general); ?>;
+    var chartBackgroundColorsGeneral = <?php echo json_encode($chart_background_colors_general); ?>;
+
+    const generalMentionsPieChartCanvas = document.getElementById('generalMentionsPieChart');
+
+    if (chartDataGeneral.length > 0 && generalMentionsPieChartCanvas) {
+        // Destruir cualquier instancia de gráfico anterior para evitar superposiciones
+        if (Chart.getChart(generalMentionsPieChartCanvas)) {
+            Chart.getChart(generalMentionsPieChartCanvas).destroy();
+        }
+
+        setTimeout(() => {
+            new Chart(generalMentionsPieChartCanvas, {
+                type: 'pie',
+                data: {
+                    labels: chartLabelsGeneral,
+                    datasets: [{
+                        data: chartDataGeneral,
+                        backgroundColor: chartBackgroundColorsGeneral,
+                        hoverOffset: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right', // Leyenda a la derecha
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed !== null) {
+                                        label += context.parsed.toFixed(1) + '%'; // Mostrar porcentaje con un decimal
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }, 50); // Pequeño retraso para asegurar que el canvas esté listo
+    } else if (generalMentionsPieChartCanvas) {
+        generalMentionsPieChartCanvas.style.display = 'none'; // Ocultar canvas si no hay datos
+        const parentDiv = generalMentionsPieChartCanvas.closest('.card-body');
+        if (parentDiv && !parentDiv.querySelector('.no-data-message-pie-chart-general')) {
+            parentDiv.insertAdjacentHTML('beforeend', '<p class="text-center mt-2 no-data-message-pie-chart-general">No hay datos de menciones por red social disponibles para el panel general.</p>');
+        }
+    }
+
+    // --- Gráfica de Volumen de Menciones (Nueva integración y optimización) ---
+    var mentionsVolumeData = <?php echo json_encode($mentions_volume_data); ?>; // Ya viene con el formato correcto {date: '...', count: ...}
+    const mentionsVolumeChartCanvas = document.getElementById('mentionsVolumeChart');
+
+    if (mentionsVolumeData.length > 0 && mentionsVolumeChartCanvas) {
+        // Preparar datos para Chart.js
+        const labels = mentionsVolumeData.map(item => item.date); // Fechas
+        const data = mentionsVolumeData.map(item => item.count);   // Cantidad de menciones
+
+        // Destruir cualquier instancia de gráfico anterior
+        if (Chart.getChart(mentionsVolumeChartCanvas)) {
+            Chart.getChart(mentionsVolumeChartCanvas).destroy();
+        }
+
+        setTimeout(() => {
+            new Chart(mentionsVolumeChartCanvas, {
+                type: 'line', // Gráfico de línea
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Número de Menciones',
+                        data: data,
+                        backgroundColor: 'rgba(0, 123, 255, 0.2)', // Color con transparencia
+                        borderColor: 'rgba(0, 123, 255, 1)',      // Color del borde
+                        borderWidth: 2,
+                        fill: true, // Rellenar área bajo la línea
+                        tension: 0.3, // Curvatura de la línea
+                        pointBackgroundColor: 'rgba(0, 123, 255, 1)',
+                        pointBorderColor: '#fff',
+                        pointHoverBackgroundColor: '#fff',
+                        pointHoverBorderColor: 'rgba(0, 123, 255, 1)',
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time', // Eje X es de tipo tiempo
+                            time: {
+                                unit: 'day', // Unidad en días
+                                tooltipFormat: 'MMM d, yyyy', // Formato de tooltip
+                                displayFormats: {
+                                    day: 'MMM d' // Formato de etiquetas en el eje
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Fecha'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true, // Empezar el eje Y desde cero
+                            title: {
+                                display: true,
+                                text: 'Menciones'
+                            },
+                            ticks: {
+                                precision: 0 // Asegura que los ticks sean números enteros (no 1.5 menciones)
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false // Ocultar leyenda (solo hay un dataset)
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                        }
+                    }
+                }
+            });
+            console.log('Gráfica de Volumen de Menciones inicializada.');
+        }, 50);
+    } else if (mentionsVolumeChartCanvas) {
+        mentionsVolumeChartCanvas.style.display = 'none'; // Ocultar canvas si no hay datos
+        const parentDiv = mentionsVolumeChartCanvas.closest('.card-body');
+        if (parentDiv && !parentDiv.querySelector('.no-data-message-volume-chart')) {
+            parentDiv.insertAdjacentHTML('beforeend', '<p class="text-center mt-2 no-data-message-volume-chart">No hay datos de volumen de menciones disponibles para el período seleccionado.</p>');
+        }
+    }
+
+
+    // --- Función para cargar la comparación vía AJAX (tu script original con ajustes para loader) ---
+    function loadComparison(event) {
+        event.preventDefault(); // Prevenir el envío del formulario tradicional
+
+        const compareUser = document.getElementById('compareUserInput').value.trim();
+        const period = document.getElementById('comparePeriod').value;
+        const platform = document.getElementById('platformSelect').value; // Mantener la plataforma seleccionada del panel general
+        const comparisonResultContainer = document.getElementById('comparisonResultContainer');
+        const loader = document.getElementById('compareLoader');
+
+        if (!compareUser) {
+            comparisonResultContainer.innerHTML = '<div class="alert alert-warning">Por favor, introduce un usuario para comparar.</div>';
+            comparisonResultContainer.style.display = 'block';
+            return;
+        }
+
+        // Ocultar resultados anteriores y mostrar loader
+        comparisonResultContainer.style.display = 'none';
+        loader.style.display = 'block';
+        comparisonResultContainer.innerHTML = ''; // Limpiar contenido anterior
+
+        // Realizar la petición AJAX a compare.php
+        fetch(`compare.php?compare_user=${encodeURIComponent(compareUser)}&period=${encodeURIComponent(period)}&platform=${encodeURIComponent(platform)}`)
+            .then(response => {
+                if (!response.ok) {
+                    // Si la respuesta HTTP no es exitosa (ej. 404, 500)
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                return response.text(); // Obtener la respuesta como texto (HTML)
+            })
+            .then(html => {
+                // Crear un div temporal para parsear el HTML recibido
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = html;
+
+                // Extraer y ejecutar cualquier script dentro del HTML recibido
+                const scriptTag = tempDiv.querySelector('script');
+                let scriptContent = '';
+                if (scriptTag) {
+                    scriptContent = scriptTag.textContent;
+                    scriptTag.remove(); // Eliminar el script del tempDiv para que no se inserte dos veces
+                }
+
+                // Insertar el HTML procesado en el contenedor de resultados
+                comparisonResultContainer.innerHTML = tempDiv.innerHTML;
+
+                // Mostrar el contenedor de resultados después de un pequeño retraso
+                setTimeout(() => {
+                    comparisonResultContainer.style.display = 'block';
+
+                    if (scriptContent) {
+                        try {
+                            console.log('Attempting to execute comparison script from compare.php.');
+                            // Usar new Function() para ejecutar el script en el ámbito global
+                            new Function(scriptContent)();
+                            console.log('Comparison script executed.');
+                        } catch (e) {
+                            console.error('Error executing comparison script from compare.php:', e);
+                        }
+                    } else {
+                        console.warn('No script found for comparison in loaded HTML. This might be expected if no data was returned.');
+                    }
+                }, 150); // Pequeño retraso para que el navegador renderice antes de ejecutar scripts
+
+            })
+            .catch(error => {
+                console.error('Error cargando la comparación:', error);
+                comparisonResultContainer.innerHTML = `<div class="alert alert-danger">Error al cargar la comparación: ${error.message}</div>`;
+                comparisonResultContainer.style.display = 'block';
+            })
+            .finally(() => {
+                loader.style.display = 'none'; // Ocultar el loader al finalizar
+            });
+    }
+</script>
+ <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const exportCsvBtn = document.getElementById('exportCsvBtn');
+        const exportPdfBtn = document.getElementById('exportPdfBtn');
+
+        function getQueryParams() {
+            const form = document.getElementById('filterForm');
+            const formData = new FormData(form);
+            const params = new URLSearchParams();
+            for (const [key, value] of formData.entries()) {
+                params.append(key, value);
+            }
+            return params.toString();
+        }
+
+        if (exportCsvBtn) {
+            exportCsvBtn.addEventListener('click', function(e) {
+                e.preventDefault(); // Prevenir el comportamiento por defecto del enlace
+                const queryParams = getQueryParams();
+                window.open('export_csv.php?' + queryParams, '_blank');
+            });
+        }
+
+        if (exportPdfBtn) {
+            exportPdfBtn.addEventListener('click', function(e) {
+                e.preventDefault(); // Prevenir el comportamiento por defecto del enlace
+                const queryParams = getQueryParams();
+                window.open('export_pdf.php?' + queryParams, '_blank');
+            });
+        }
+    });
+</script>
+</body>
+
